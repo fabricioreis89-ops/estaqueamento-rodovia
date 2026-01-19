@@ -91,13 +91,15 @@ if uploaded_file:
             width_min_pixels=2
         )
 
-        point_layer = pdk.Layer(
-            "ScatterplotLayer",
-            data=df_estacas,
-            get_position="[Longitude, Latitude]",
-            get_radius=3,
-            pickable=True
-        )
+       point_layer = pdk.Layer(
+    "ScatterplotLayer",
+    data=df_estacas,
+    get_position="[Longitude, Latitude]",
+    get_radius=12,
+    radius_units="meters",
+    get_fill_color=[255, 0, 0, 180],
+    pickable=True
+)
 
         centro_lon = eixo.centroid.x
         centro_lat = eixo.centroid.y
