@@ -1,4 +1,7 @@
 streamlit
+pandas
+numpy
+pyproj
+fastkml
 shapely
-geopandas
 pydeck
