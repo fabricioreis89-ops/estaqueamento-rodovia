@@ -1,101 +1,100 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from pyproj import Transformer
-from fastkml import kml
-from shapely.geometry import LineString
 import pydeck as pdk
+from shapely.geometry import LineString
+from lxml import etree
+from pyproj import Transformer
 
-st.set_page_config(layout="wide")
-st.title("Estaqueamento Automático de Rodovia a partir de KML")
-
-# =========================
-# FUNÇÕES AUXILIARES
-# =========================
-
+# ===============================
+# FUNÇÃO: LER LINHA DO KML
+# ===============================
 def ler_linha_kml(uploaded_file):
-    conteudo = uploaded_file.read().decode("utf-8")
+    conteudo = uploaded_file.read()
+    tree = etree.fromstring(conteudo)
 
-    k = kml.KML()
-    k.from_string(conteudo.encode("utf-8"))
+    ns = {"kml": "http://www.opengis.net/kml/2.2"}
+    coords_text = tree.xpath(".//kml:LineString/kml:coordinates", namespaces=ns)
 
-    documentos = list(k.features())
+    if not coords_text:
+        return None
 
-    for doc in documentos:
-        elementos = list(doc.features())
+    coords = []
+    for linha in coords_text[0].text.strip().split():
+        lon, lat, *_ = map(float, linha.split(","))
+        coords.append((lon, lat))
 
-        for elem in elementos:
-            # Caso exista Folder
-            if hasattr(elem, "features"):
-                for placemark in elem.features():
-                    if isinstance(placemark.geometry, LineString):
-                        return placemark.geometry
-            else:
-                # Caso o Placemark esteja direto no Document
-                if isinstance(elem.geometry, LineString):
-                    return elem.geometry
-
-    return None
+    return LineString(coords)
 
 
-def latlon_para_utm(lat, lon):
-    zona = int((lon + 180) / 6) + 1
-    hemisferio = "south" if lat < 0 else "north"
-    epsg = f"326{zona}" if hemisferio == "north" else f"327{zona}"
+# ===============================
+# FUNÇÃO: GERAR ESTACAS
+# ===============================
+def gerar_estacas(
+    linha,
+    estaca_inicial,
+    metro_inicial,
+    estaca_final,
+    espacamento=20
+):
+    # Transformador geográfico -> UTM automático
+    lon0, lat0 = linha.coords[0]
+    zona = int((lon0 + 180) / 6) + 1
+    epsg = 32700 + zona if lat0 < 0 else 32600 + zona
 
-    transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
-    x, y = transformer.transform(lon, lat)
-    return x, y, epsg
+    proj = Transformer.from_crs(4326, epsg, always_xy=True)
+    inv = Transformer.from_crs(epsg, 4326, always_xy=True)
 
+    linha_utm = LineString([proj.transform(*c) for c in linha.coords])
 
-def utm_para_latlon(x, y, epsg):
-    transformer = Transformer.from_crs(f"EPSG:{epsg}", "EPSG:4326", always_xy=True)
-    lon, lat = transformer.transform(x, y)
-    return lat, lon
+    comprimento_total = linha_utm.length
+    inicio_metros = metro_inicial
+    fim_metros = (estaca_final - estaca_inicial) * 20
 
+    distancias = np.arange(inicio_metros, fim_metros + 0.01, espacamento)
 
-def gerar_estacas(coords_latlon, estaca_inicial_num, estaca_inicial_m, espacamento=20):
-    # Converter todo o eixo para UTM
-    x0, y0, epsg = latlon_para_utm(coords_latlon[0][1], coords_latlon[0][0])
+    dados = []
 
-    coords_utm = []
-    for lon, lat in coords_latlon:
-        x, y, _ = latlon_para_utm(lat, lon)
-        coords_utm.append((x, y))
+    for d in distancias:
+        ponto = linha_utm.interpolate(d)
+        lon, lat = inv.transform(ponto.x, ponto.y)
 
-    linha = LineString(coords_utm)
-    comprimento_total = linha.length
+        estaca_num = estaca_inicial + int(d // 20)
+        resto = int(d % 20)
 
-    estacas = []
+        estaca_txt = f"E{estaca_num}+{resto:02d}"
 
-    dist_atual = -estaca_inicial_m
-    numero_estaca = estaca_inicial_num
-
-    while dist_atual <= comprimento_total:
-        ponto = linha.interpolate(max(dist_atual, 0))
-        x, y = ponto.x, ponto.y
-        lat, lon = utm_para_latlon(x, y, epsg)
-
-        sufixo = int(round(estaca_inicial_m + dist_atual)) % espacamento
-        estaca_label = f"E{numero_estaca}+{sufixo:02d}"
-
-        estacas.append({
-            "Estaca": estaca_label,
+        dados.append({
+            "Estaca": estaca_txt,
+            "Estaca_Num": estaca_num,
+            "Metro": resto,
             "Latitude": lat,
-            "Longitude": lon
+            "Longitude": lon,
+            "UTM_E": ponto.x,
+            "UTM_N": ponto.y
         })
 
-        dist_atual += espacamento
-        numero_estaca += 1
-
-    return pd.DataFrame(estacas)
+    return pd.DataFrame(dados)
 
 
-# =========================
-# INTERFACE STREAMLIT
-# =========================
+# ===============================
+# STREAMLIT APP
+# ===============================
+st.set_page_config(layout="wide")
+st.title("Estaqueamento Automático de Rodovias")
 
-uploaded_file = st.file_uploader("Envie o arquivo KML do eixo da rodovia", type=["kml"])
+uploaded_file = st.file_uploader("Carregue o arquivo KML da rodovia", type="kml")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    estaca_inicial = st.number_input("Número da estaca inicial", value=853)
+
+with col2:
+    metro_inicial = st.number_input("Metro inicial (ex: +16)", value=16)
+
+with col3:
+    estaca_final = st.number_input("Número da estaca final", value=2777)
 
 if uploaded_file:
     linha = ler_linha_kml(uploaded_file)
@@ -104,77 +103,55 @@ if uploaded_file:
         st.error("O KML não contém um LineString válido.")
         st.stop()
 
-    coords = list(linha.coords)
+    df = gerar_estacas(
+        linha,
+        estaca_inicial,
+        metro_inicial,
+        estaca_final
+    )
 
-    st.success("Traçado carregado com sucesso.")
+    st.success(f"{len(df)} estacas geradas")
 
-    col1, col2 = st.columns(2)
+    # ===============================
+    # MAPA
+    # ===============================
+    view_state = pdk.ViewState(
+        latitude=df["Latitude"].mean(),
+        longitude=df["Longitude"].mean(),
+        zoom=9
+    )
 
-    with col1:
-        estaca_inicial_num = st.number_input(
-            "Número da estaca inicial (ex: 853)",
-            min_value=0,
-            value=853,
-            step=1
-        )
+    line_layer = pdk.Layer(
+        "PathLayer",
+        data=[{"path": list(linha.coords)}],
+        get_path="path",
+        get_color=[0, 0, 255],
+        get_width=5
+    )
 
-    with col2:
-        estaca_inicial_m = st.number_input(
-            "Avanço inicial em metros (ex: 16)",
-            min_value=0,
-            max_value=19,
-            value=16,
-            step=1
-        )
+    point_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=df,
+        get_position="[Longitude, Latitude]",
+        get_radius=10,
+        radius_units="meters",
+        get_fill_color=[255, 0, 0],
+        pickable=True
+    )
 
-    if st.button("Gerar estaqueamento"):
-        df_estacas = gerar_estacas(
-            coords,
-            estaca_inicial_num,
-            estaca_inicial_m
-        )
+    deck = pdk.Deck(
+        layers=[line_layer, point_layer],
+        initial_view_state=view_state,
+        tooltip={"text": "{Estaca}"}
+    )
 
-        st.subheader("Tabela de Estacas")
-        st.dataframe(df_estacas, use_container_width=True)
+    st.pydeck_chart(deck)
 
-        # =========================
-        # MAPA INTERATIVO
-        # =========================
-
-        linha_lat = [lat for lon, lat in coords]
-        linha_lon = [lon for lon, lat in coords]
-
-        view_state = pdk.ViewState(
-            latitude=df_estacas["Latitude"].mean(),
-            longitude=df_estacas["Longitude"].mean(),
-            zoom=9,
-            pitch=0
-        )
-
-        eixo_layer = pdk.Layer(
-            "PathLayer",
-            data=[{"path": list(zip(linha_lon, linha_lat))}],
-            get_path="path",
-            get_width=5,
-            get_color=[0, 0, 255]
-        )
-
-        estaca_layer = pdk.Layer(
-            "ScatterplotLayer",
-            data=df_estacas,
-            get_position="[Longitude, Latitude]",
-            get_radius=15,
-            radius_units="meters",
-            get_fill_color=[255, 0, 0, 180],
-            pickable=True
-        )
-
-        deck = pdk.Deck(
-            layers=[eixo_layer, estaca_layer],
-            initial_view_state=view_state,
-            tooltip={"text": "{Estaca}"}
-        )
-
-        st.subheader("Mapa Interativo")
-        st.pydeck_chart(deck)
-
+    # ===============================
+    # DOWNLOADS
+    # ===============================
+    st.download_button(
+        "Baixar planilha Excel",
+        df.to_excel(index=False),
+        file_name="estaqueamento.xlsx"
+    )
