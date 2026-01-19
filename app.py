@@ -19,14 +19,36 @@ def ler_eixo_kml(uploaded_file):
     k = kml.KML()
     k.from_string(uploaded_file.read())
 
-    for feature in k.features:
-        if hasattr(feature, "features"):
-            for sub in feature.features:
-                if sub.geometry and hasattr(sub.geometry, "coords"):
-                    return LineString(sub.geometry.coords)
+    def buscar_linha(features):
+        for f in features:
+            # Se for Placemark com geometria
+            if hasattr(f, "geometry") and f.geometry:
+                geom = f.geometry
 
-    raise ValueError("O KML não contém uma linha (LineString).")
+                # LineString direta
+                if geom.geom_type == "LineString":
+                    return LineString(geom.coords)
 
+                # MultiGeometry (muito comum no Google Earth)
+                if geom.geom_type == "GeometryCollection":
+                    for g in geom.geoms:
+                        if g.geom_type == "LineString":
+                            return LineString(g.coords)
+
+            # Se tiver sub-features (Document ou Folder)
+            if hasattr(f, "features"):
+                result = buscar_linha(f.features)
+                if result:
+                    return result
+
+        return None
+
+    linha = buscar_linha(k.features)
+
+    if linha is None:
+        raise ValueError("O KML contém LineString, mas não foi possível localizá-la.")
+
+    return linha
 
 def calcular_utm_zone(lon):
     return int((lon + 180) / 6) + 1
