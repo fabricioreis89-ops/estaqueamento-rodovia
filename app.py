@@ -115,43 +115,68 @@ if uploaded_file:
     # ===============================
     # MAPA
     # ===============================
+    import io # Adicione este import no topo do arquivo
+
+# ... (mantenha suas funções de ler_kml e gerar_estacas iguais)
+
+if uploaded_file:
+    linha = ler_linha_kml(uploaded_file)
+
+    if linha is None:
+        st.error("O KML não contém um LineString válido.")
+        st.stop()
+
+    df = gerar_estacas(linha, estaca_inicial, metro_inicial, estaca_final)
+
+    st.success(f"{len(df)} estacas geradas")
+
+    # ===============================
+    # MAPA (MELHORADO)
+    # ===============================
     view_state = pdk.ViewState(
         latitude=df["Latitude"].mean(),
         longitude=df["Longitude"].mean(),
-        zoom=9
+        zoom=12 # Aumentei um pouco o zoom inicial
     )
 
+    # Camada do traçado original (Linha azul fina)
     line_layer = pdk.Layer(
         "PathLayer",
         data=[{"path": list(linha.coords)}],
         get_path="path",
-        get_color=[0, 0, 255],
-        get_width=5
+        get_color=[0, 100, 255, 150], # Azul com transparência
+        get_width=3
     )
 
+    # Camada das estacas (Pontos vermelhos)
     point_layer = pdk.Layer(
         "ScatterplotLayer",
         data=df,
         get_position="[Longitude, Latitude]",
-        get_radius=10,
-        radius_units="meters",
+        get_radius=5,           # Raio real em metros
+        radius_min_pixels=3,    # Garante que o ponto não suma ao tirar o zoom
+        radius_max_pixels=10,   # Garante que o ponto não vire um borrão ao dar zoom
         get_fill_color=[255, 0, 0],
         pickable=True
     )
 
-    deck = pdk.Deck(
+    st.pydeck_chart(pdk.Deck(
         layers=[line_layer, point_layer],
         initial_view_state=view_state,
-        tooltip={"text": "{Estaca}"}
-    )
-
-    st.pydeck_chart(deck)
+        tooltip={"text": "Estaca: {Estaca}\nUTM E: {UTM_E:.2f}\nUTM N: {UTM_N:.2f}"}
+    ))
 
     # ===============================
-    # DOWNLOADS
+    # DOWNLOADS (CORRIGIDO)
     # ===============================
+    # Criar buffer para o Excel
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False)
+    
     st.download_button(
-        "Baixar planilha Excel",
-        df.to_excel(index=False),
-        file_name="estaqueamento.xlsx"
+        label="📥 Baixar planilha das Estacas (Excel)",
+        data=buffer.getvalue(),
+        file_name="estaqueamento_rodovia.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
