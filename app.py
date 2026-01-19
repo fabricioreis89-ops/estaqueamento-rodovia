@@ -19,10 +19,11 @@ def ler_eixo_kml(uploaded_file):
     k = kml.KML()
     k.from_string(uploaded_file.read())
 
-    for feature in k.features():
-        for sub in feature.features():
-            if hasattr(sub.geometry, "coords"):
-                return LineString(sub.geometry.coords)
+    for feature in k.features:
+        if hasattr(feature, "features"):
+            for sub in feature.features:
+                if sub.geometry and hasattr(sub.geometry, "coords"):
+                    return LineString(sub.geometry.coords)
 
     raise ValueError("O KML não contém uma linha (LineString).")
 
