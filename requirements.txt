@@ -1,8 +1,8 @@
 streamlit
 pandas
 numpy
-pyproj
-fastkml
-shapely
 pydeck
+shapely
 lxml
+pyproj
+openpyxl
