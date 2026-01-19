@@ -105,17 +105,40 @@ if uploaded_file:
         centro_lat = eixo.centroid.y
 
         view_state = pdk.ViewState(
-            longitude=centro_lon,
-            latitude=centro_lat,
-            zoom=11
-        )
+    latitude=df_estacas["Latitude"].mean(),
+    longitude=df_estacas["Longitude"].mean(),
+    zoom=10,
+    pitch=0
+)
 
-        st.pydeck_chart(
-            pdk.Deck(
-                layers=[path_layer, point_layer],
-                initial_view_state=view_state,
-                map_style=None  # OpenStreetMap
-            )
+line_layer = pdk.Layer(
+    "PathLayer",
+    data=[{
+        "path": list(zip(linha_lon, linha_lat))
+    }],
+    get_path="path",
+    get_width=5,
+    get_color=[0, 0, 255]
+)
+
+point_layer = pdk.Layer(
+    "ScatterplotLayer",
+    data=df_estacas,
+    get_position="[Longitude, Latitude]",
+    get_radius=12,
+    radius_units="meters",
+    get_fill_color=[255, 0, 0, 180],
+    pickable=True
+)
+
+deck = pdk.Deck(
+    layers=[line_layer, point_layer],
+    initial_view_state=view_state,
+    tooltip={"text": "{Estaca}"}
+)
+
+st.pydeck_chart(deck)
+
         )
 
         # ============================
