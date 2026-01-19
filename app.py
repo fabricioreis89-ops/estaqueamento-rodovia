@@ -15,14 +15,25 @@ st.title("Estaqueamento Automático de Rodovia a partir de KML")
 
 def ler_linha_kml(uploaded_file):
     conteudo = uploaded_file.read().decode("utf-8")
+
     k = kml.KML()
     k.from_string(conteudo.encode("utf-8"))
 
-    for doc in k.features():
-        for placemark in doc.features():
-            geom = placemark.geometry
-            if isinstance(geom, LineString):
-                return geom
+    documentos = list(k.features())
+
+    for doc in documentos:
+        elementos = list(doc.features())
+
+        for elem in elementos:
+            # Caso exista Folder
+            if hasattr(elem, "features"):
+                for placemark in elem.features():
+                    if isinstance(placemark.geometry, LineString):
+                        return placemark.geometry
+            else:
+                # Caso o Placemark esteja direto no Document
+                if isinstance(elem.geometry, LineString):
+                    return elem.geometry
 
     return None
 
