@@ -1,7 +1,4 @@
 streamlit
-pandas
-folium
-streamlit-folium
 shapely
-pyproj
-fastkml
+geopandas
+pydeck
