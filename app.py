@@ -1,151 +1,169 @@
 import streamlit as st
-from xml.etree import ElementTree as ET
-from shapely.geometry import LineString, Point
-import geopandas as gpd
-import pydeck as pdk
 import pandas as pd
-import math
+import numpy as np
+from pyproj import Transformer
+from fastkml import kml
+from shapely.geometry import LineString
+import pydeck as pdk
 
-# ============================
-# LEITURA ROBUSTA DO KML
-# ============================
-def ler_eixo_kml(uploaded_file):
-    tree = ET.parse(uploaded_file)
-    root = tree.getroot()
-    ns = {"kml": "http://www.opengis.net/kml/2.2"}
+st.set_page_config(layout="wide")
+st.title("Estaqueamento Automático de Rodovia a partir de KML")
 
-    linestring = root.find(".//kml:LineString", ns)
-    if linestring is None:
-        raise ValueError("O KML não contém LineString.")
+# =========================
+# FUNÇÕES AUXILIARES
+# =========================
 
-    coords_text = linestring.find("kml:coordinates", ns).text.strip()
+def ler_linha_kml(uploaded_file):
+    conteudo = uploaded_file.read().decode("utf-8")
+    k = kml.KML()
+    k.from_string(conteudo.encode("utf-8"))
 
-    coords = []
-    for coord in coords_text.split():
-        lon, lat, *_ = map(float, coord.split(","))
-        coords.append((lon, lat))
+    for doc in k.features():
+        for placemark in doc.features():
+            geom = placemark.geometry
+            if isinstance(geom, LineString):
+                return geom
 
-    return LineString(coords)
+    return None
 
-# ============================
-# ESTAQUEAMENTO
-# ============================
-def gerar_estacas(linha, estaca_inicial_m, intervalo=20):
-    gdf = gpd.GeoDataFrame(geometry=[linha], crs="EPSG:4326")
-    gdf_utm = gdf.to_crs(gdf.estimate_utm_crs())
 
-    linha_utm = gdf_utm.geometry.iloc[0]
-    comprimento = linha_utm.length
+def latlon_para_utm(lat, lon):
+    zona = int((lon + 180) / 6) + 1
+    hemisferio = "south" if lat < 0 else "north"
+    epsg = f"326{zona}" if hemisferio == "north" else f"327{zona}"
+
+    transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
+    x, y = transformer.transform(lon, lat)
+    return x, y, epsg
+
+
+def utm_para_latlon(x, y, epsg):
+    transformer = Transformer.from_crs(f"EPSG:{epsg}", "EPSG:4326", always_xy=True)
+    lon, lat = transformer.transform(x, y)
+    return lat, lon
+
+
+def gerar_estacas(coords_latlon, estaca_inicial_num, estaca_inicial_m, espacamento=20):
+    # Converter todo o eixo para UTM
+    x0, y0, epsg = latlon_para_utm(coords_latlon[0][1], coords_latlon[0][0])
+
+    coords_utm = []
+    for lon, lat in coords_latlon:
+        x, y, _ = latlon_para_utm(lat, lon)
+        coords_utm.append((x, y))
+
+    linha = LineString(coords_utm)
+    comprimento_total = linha.length
 
     estacas = []
-    pos = 0
 
-    while pos <= comprimento:
-        ponto = linha_utm.interpolate(pos)
-        ponto_geo = gpd.GeoSeries([ponto], crs=gdf_utm.crs).to_crs(4326).iloc[0]
+    dist_atual = -estaca_inicial_m
+    numero_estaca = estaca_inicial_num
 
-        estaca_m = estaca_inicial_m + pos
-        numero = int(estaca_m // 20)
-        resto = estaca_m % 20
+    while dist_atual <= comprimento_total:
+        ponto = linha.interpolate(max(dist_atual, 0))
+        x, y = ponto.x, ponto.y
+        lat, lon = utm_para_latlon(x, y, epsg)
+
+        sufixo = int(round(estaca_inicial_m + dist_atual)) % espacamento
+        estaca_label = f"E{numero_estaca}+{sufixo:02d}"
 
         estacas.append({
-            "Estaca": f"E{numero}+{resto:.2f}",
-            "Latitude": ponto_geo.y,
-            "Longitude": ponto_geo.x
+            "Estaca": estaca_label,
+            "Latitude": lat,
+            "Longitude": lon
         })
 
-        pos += intervalo
+        dist_atual += espacamento
+        numero_estaca += 1
 
     return pd.DataFrame(estacas)
 
-# ============================
+
+# =========================
 # INTERFACE STREAMLIT
-# ============================
-st.set_page_config(layout="wide")
-st.title("📍 Mapa Interativo com Estaqueamento")
+# =========================
 
-uploaded_file = st.file_uploader("Envie o arquivo KML do eixo", type=["kml"])
-
-estaca_inicial = st.number_input(
-    "Estaca inicial (em metros, ex: E853+16 = 17076)",
-    value=17076.0,
-    step=1.0
-)
+uploaded_file = st.file_uploader("Envie o arquivo KML do eixo da rodovia", type=["kml"])
 
 if uploaded_file:
-    try:
-        eixo = ler_eixo_kml(uploaded_file)
+    linha = ler_linha_kml(uploaded_file)
 
-        # Gera estacas
-        df_estacas = gerar_estacas(eixo, estaca_inicial)
+    if linha is None:
+        st.error("O KML não contém um LineString válido.")
+        st.stop()
 
-        # ============================
-        # MAPA INTERATIVO (SEM MAPBOX)
-        # ============================
-        path_layer = pdk.Layer(
-            "PathLayer",
-            data=[{"path": list(eixo.coords)}],
-            get_path="path",
-            get_width=4,
-            width_scale=10,
-            width_min_pixels=2
+    coords = list(linha.coords)
+
+    st.success("Traçado carregado com sucesso.")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        estaca_inicial_num = st.number_input(
+            "Número da estaca inicial (ex: 853)",
+            min_value=0,
+            value=853,
+            step=1
         )
 
-       point_layer = pdk.Layer(
-    "ScatterplotLayer",
-    data=df_estacas,
-    get_position="[Longitude, Latitude]",
-    get_radius=12,
-    radius_units="meters",
-    get_fill_color=[255, 0, 0, 180],
-    pickable=True
-)
-
-        centro_lon = eixo.centroid.x
-        centro_lat = eixo.centroid.y
-
-        view_state = pdk.ViewState(
-    latitude=df_estacas["Latitude"].mean(),
-    longitude=df_estacas["Longitude"].mean(),
-    zoom=10,
-    pitch=0
-)
-
-line_layer = pdk.Layer(
-    "PathLayer",
-    data=[{
-        "path": list(zip(linha_lon, linha_lat))
-    }],
-    get_path="path",
-    get_width=5,
-    get_color=[0, 0, 255]
-)
-
-point_layer = pdk.Layer(
-    "ScatterplotLayer",
-    data=df_estacas,
-    get_position="[Longitude, Latitude]",
-    get_radius=12,
-    radius_units="meters",
-    get_fill_color=[255, 0, 0, 180],
-    pickable=True
-)
-
-deck = pdk.Deck(
-    layers=[line_layer, point_layer],
-    initial_view_state=view_state,
-    tooltip={"text": "{Estaca}"}
-)
-
-st.pydeck_chart(deck)
-
+    with col2:
+        estaca_inicial_m = st.number_input(
+            "Avanço inicial em metros (ex: 16)",
+            min_value=0,
+            max_value=19,
+            value=16,
+            step=1
         )
 
-        # ============================
-        # TABELA TÉCNICA
-        # ============================
-        st.subheader("📋 Estaqueamento")
+    if st.button("Gerar estaqueamento"):
+        df_estacas = gerar_estacas(
+            coords,
+            estaca_inicial_num,
+            estaca_inicial_m
+        )
+
+        st.subheader("Tabela de Estacas")
         st.dataframe(df_estacas, use_container_width=True)
 
-    except Exception as e:
-        st.error(f"Erro: {e}")
+        # =========================
+        # MAPA INTERATIVO
+        # =========================
+
+        linha_lat = [lat for lon, lat in coords]
+        linha_lon = [lon for lon, lat in coords]
+
+        view_state = pdk.ViewState(
+            latitude=df_estacas["Latitude"].mean(),
+            longitude=df_estacas["Longitude"].mean(),
+            zoom=9,
+            pitch=0
+        )
+
+        eixo_layer = pdk.Layer(
+            "PathLayer",
+            data=[{"path": list(zip(linha_lon, linha_lat))}],
+            get_path="path",
+            get_width=5,
+            get_color=[0, 0, 255]
+        )
+
+        estaca_layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=df_estacas,
+            get_position="[Longitude, Latitude]",
+            get_radius=15,
+            radius_units="meters",
+            get_fill_color=[255, 0, 0, 180],
+            pickable=True
+        )
+
+        deck = pdk.Deck(
+            layers=[eixo_layer, estaca_layer],
+            initial_view_state=view_state,
+            tooltip={"text": "{Estaca}"}
+        )
+
+        st.subheader("Mapa Interativo")
+        st.pydeck_chart(deck)
+
